@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
 
-    Copyright 2016-2017 The OpenZipkin Authors
+    Copyright 2016-2018 The OpenZipkin Authors
 
     Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
     in compliance with the License. You may obtain a copy of the License at
@@ -20,7 +20,7 @@
   <parent>
     <groupId>io.zipkin.dependencies</groupId>
     <artifactId>zipkin-dependencies-parent</artifactId>
-    <version>1.6.1-SNAPSHOT</version>
+    <version>1.12.1-SNAPSHOT</version>
   </parent>
 
   <artifactId>zipkin-dependencies</artifactId>
@@ -38,6 +38,11 @@
 
     <dependency>
       <groupId>${project.groupId}</groupId>
+      <artifactId>zipkin-dependencies-cassandra3</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>${project.groupId}</groupId>
       <artifactId>zipkin-dependencies-mysql</artifactId>
     </dependency>
 
@@ -51,7 +56,7 @@
     <plugins>
       <plugin>
         <artifactId>maven-shade-plugin</artifactId>
-        <version>3.0.0</version>
+        <version>3.1.0</version>
         <executions>
           <execution>
             <phase>package</phase>
@@ -109,14 +114,14 @@
                   </includes>
                 </filter>
                 <filter>
-                  <artifact>com.typesafe.akka:*</artifact>
+                  <artifact>net.jpountz.lz4:*</artifact>
                   <includes>
                     <include>**</include>
                   </includes>
                 </filter>
                 <filter>
                   <!-- org.elasticsearch.spark.sql.SparkSQLCompatibilityLevel -->
-                  <artifact>org.elasticsearch:elasticsearch-spark-13_${scala.binary.version}</artifact>
+                  <artifact>org.elasticsearch:elasticsearch-spark-20_${scala.binary.version}</artifact>
                   <includes>
                     <include>**</include>
                   </includes>
@@ -124,6 +129,13 @@
                 <filter>
                   <!-- elasticsearch -->
                   <artifact>commons-httpclient:commons-httpclient</artifact>
+                  <includes>
+                    <include>**</include>
+                  </includes>
+                </filter>
+                <filter>
+                  <!-- org.apache.xerces.jaxp.DocumentBuilderFactoryImpl -->
+                  <artifact>xerces:xercesImpl</artifact>
                   <includes>
                     <include>**</include>
                   </includes>
@@ -138,6 +150,25 @@
                   </excludes>
                 </filter>
               </filters>
+              <!--
+                com.datastax.driver.core.Cluster fails to initialize (because of its check for 16.01)
+                See https://stackoverflow.com/questions/36877897/detected-guava-issue-1635-which-indicates-that-a-version-of-guava-less-than-16
+                TODO: When cassandra-driver-core 4.x is out, revisit this as it no longer uses guava
+              -->
+              <relocations>
+                <relocation>
+                  <pattern>com.google.common</pattern>
+                  <shadedPattern>shaded.com.google.common</shadedPattern>
+                  <includes>
+                    <include>com.google.common.**</include>
+                  </includes>
+                  <excludes>
+                    <exclude>com.google.common.base.Optional</exclude>
+                    <exclude>com.google.common.base.Absent</exclude>
+                    <exclude>com.google.common.base.Present</exclude>
+                  </excludes>
+                </relocation>
+              </relocations>
               <createDependencyReducedPom>false</createDependencyReducedPom>
             </configuration>
           </execution>

@@ -1,5 +1,5 @@
-/**
- * Copyright 2016-2017 The OpenZipkin Authors
+/*
+ * Copyright 2016-2018 The OpenZipkin Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -19,7 +19,6 @@ import java.util.TimeZone;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
-import zipkin.internal.Util;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -36,14 +35,11 @@ public class ZipkinDependenciesJobTest {
     assertThat(new Date(date))
         .hasYear(2013)
         .hasMonth(5)
-        .hasDayOfMonth(15);
-  }
-
-  @Test
-  public void parseDate_midnightUTC() throws ParseException {
-    long date = ZipkinDependenciesJob.parseDay("2013-05-15");
-    assertThat(date)
-        .isEqualTo(Util.midnightUTC(date));
+        .hasDayOfMonth(15)
+        .hasHourOfDay(0)
+        .hasMinute(0)
+        .hasSecond(0)
+        .hasMillisecond(0);
   }
 
   @Test

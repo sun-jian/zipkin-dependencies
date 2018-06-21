@@ -1,5 +1,5 @@
-/**
- * Copyright 2016-2017 The OpenZipkin Authors
+/*
+ * Copyright 2016-2018 The OpenZipkin Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -19,7 +19,7 @@ import org.apache.log4j.Appender;
 import org.apache.log4j.Level;
 import org.apache.log4j.LogManager;
 import org.apache.log4j.Logger;
-import zipkin.internal.DependencyLinker;
+import zipkin2.internal.DependencyLinker;
 
 /**
  * The explicitly initializes log configuration for zipkin categories to a predefined level. This is
@@ -56,6 +56,7 @@ import zipkin.internal.DependencyLinker;
 // after an task deserializes on an executor. Until such is available, this is the least touch way.
 public final class LogInitializer implements Serializable, Runnable {
   private static final long serialVersionUID = 0L;
+  static final String[] LOG_CATEGORIES = {"zipkin", "zipkin2"};
 
   /**
    * Call this prior to any phase to ensure zipkin logging is setup
@@ -75,14 +76,16 @@ public final class LogInitializer implements Serializable, Runnable {
   }
 
   @Override public void run() {
-    Logger zipkinLogger = LogManager.getLogger("zipkin");
-    if (!log4Jlevel.equals(zipkinLogger.getLevel())) {
-      zipkinLogger.setLevel(log4Jlevel);
-      if (zipkinLogger.getAdditivity()) {
-        addLogAppendersFromRoot(zipkinLogger);
+    for (String category : LOG_CATEGORIES) {
+      Logger zipkinLogger = LogManager.getLogger(category);
+      if (!log4Jlevel.equals(zipkinLogger.getLevel())) {
+        zipkinLogger.setLevel(log4Jlevel);
+        if (zipkinLogger.getAdditivity()) {
+          addLogAppendersFromRoot(zipkinLogger);
+        }
       }
+      java.util.logging.Logger.getLogger(category).setLevel(julLevel);
     }
-    java.util.logging.Logger.getLogger("zipkin").setLevel(julLevel);
   }
 
   private static java.util.logging.Level toJul(Level log4Jlevel) {

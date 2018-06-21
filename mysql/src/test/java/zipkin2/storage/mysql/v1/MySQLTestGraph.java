@@ -1,5 +1,5 @@
-/**
- * Copyright 2016-2017 The OpenZipkin Authors
+/*
+ * Copyright 2016-2018 The OpenZipkin Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -11,35 +11,38 @@
  * or implied. See the License for the specific language governing permissions and limitations under
  * the License.
  */
-package zipkin.storage.mysql;
+package zipkin2.storage.mysql.v1;
 
 import java.sql.SQLException;
+import javax.annotation.Nullable;
 import org.junit.AssumptionViolatedException;
 import org.mariadb.jdbc.MariaDbDataSource;
 import zipkin.internal.LazyCloseable;
-import zipkin.internal.Nullable;
+import zipkin2.storage.mysql.v1.MySQLStorage;
 
 import static zipkin.internal.Util.envOr;
 
 public enum MySQLTestGraph {
   INSTANCE;
 
-  final LazyCloseable<MySQLStorage> storage = new LazyCloseable<MySQLStorage>() {
-    @Override protected MySQLStorage compute() {
-      String mysqlUrl = mysqlUrlFromEnv();
-      if (mysqlUrl == null) {
-        throw new AssumptionViolatedException(
-            "Minimally, the environment variable MYSQL_USER must be set");
-      }
-      try {
-        MariaDbDataSource dataSource = new MariaDbDataSource();
-        dataSource.setUrl(mysqlUrl);
-        return new MySQLStorage.Builder().datasource(dataSource).executor(Runnable::run).build();
-      } catch (SQLException e) {
-        throw new AssumptionViolatedException(e.getMessage());
-      }
-    }
-  };
+  final LazyCloseable<MySQLStorage> storage =
+      new LazyCloseable<MySQLStorage>() {
+        @Override
+        protected MySQLStorage compute() {
+          String mysqlUrl = mysqlUrlFromEnv();
+          if (mysqlUrl == null) {
+            throw new AssumptionViolatedException(
+                "Minimally, the environment variable MYSQL_USER must be set");
+          }
+          try {
+            MariaDbDataSource dataSource = new MariaDbDataSource();
+            dataSource.setUrl(mysqlUrl);
+            return MySQLStorage.newBuilder().datasource(dataSource).executor(Runnable::run).build();
+          } catch (SQLException e) {
+            throw new AssumptionViolatedException(e.getMessage());
+          }
+        }
+      };
 
   @Nullable
   private static String mysqlUrlFromEnv() {
@@ -50,7 +53,8 @@ public enum MySQLTestGraph {
     String mysqlPass = envOr("MYSQL_PASS", "");
     String mysqlDb = envOr("MYSQL_DB", "zipkin");
 
-    return String.format("jdbc:mysql://%s:%s/%s?user=%s&password=%s&autoReconnect=true",
+    return String.format(
+        "jdbc:mysql://%s:%s/%s?user=%s&password=%s&autoReconnect=true",
         mysqlHost, mysqlPort, mysqlDb, mysqlUser, mysqlPass);
   }
 }

@@ -1,5 +1,5 @@
-/**
- * Copyright 2016-2017 The OpenZipkin Authors
+/*
+ * Copyright 2016-2018 The OpenZipkin Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -19,27 +19,27 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.text.SimpleDateFormat;
+import java.util.Calendar;
 import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
+import javax.annotation.Nullable;
 import org.apache.spark.SparkConf;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.sql.SQLContext;
-import org.apache.spark.sql.execution.datasources.jdbc.DefaultSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import scala.Tuple2;
-import zipkin.DependencyLink;
-import zipkin.internal.Nullable;
+import zipkin2.DependencyLink;
 
-import static zipkin.internal.Util.checkNotNull;
-import static zipkin.internal.Util.midnightUTC;
+import static com.google.common.base.Preconditions.checkNotNull;
 
 public final class MySQLDependenciesJob {
-  private static final Logger log = LoggerFactory.getLogger(MySQLDependenciesJob.class);
+  static final TimeZone UTC = TimeZone.getTimeZone("UTC");
+  static final Logger log = LoggerFactory.getLogger(MySQLDependenciesJob.class);
 
   public static Builder builder() {
     return new Builder();
@@ -182,13 +182,14 @@ public final class MySQLDependenciesJob {
     long microsLower = day * 1000;
     long microsUpper = (day * 1000) + TimeUnit.DAYS.toMicros(1) - 1;
 
-    String fields = "s.trace_id, s.parent_id, s.id, a.a_key, a.endpoint_service_name";
+    String fields = "s.trace_id, s.parent_id, s.id, a.a_key, a.endpoint_service_name, a.a_type";
     if (hasTraceIdHigh) fields = "s.trace_id_high, " + fields;
     String groupByFields = fields.replace("s.parent_id, ", "");
     String linksQuery = String.format(
         "select distinct %s "+
             "from zipkin_spans s left outer join zipkin_annotations a on " +
-            "  (s.trace_id = a.trace_id and s.id = a.span_id and a.a_key in ('ca', 'cs', 'sr', 'sa')) " +
+            "  (s.trace_id = a.trace_id and s.id = a.span_id " +
+            "     and a.a_key in ('lc', 'ca', 'cs', 'sr', 'sa', 'error')) " +
             "where s.start_ts between %s and %s group by %s",
         fields, microsLower, microsUpper, groupByFields);
 
@@ -199,14 +200,19 @@ public final class MySQLDependenciesJob {
 
     JavaSparkContext sc = new JavaSparkContext(conf);
 
-    List<DependencyLink> links = new SQLContext(sc).read().format(DefaultSource.class.getName())
-        .options(options).load()
+    List<DependencyLink> links = new SQLContext(sc).read()
+        .format("org.apache.spark.sql.execution.datasources.jdbc.JdbcRelationProvider")
+        .options(options)
+        .load()
         .toJavaRDD()
         .groupBy(r -> r.getLong(hasTraceIdHigh ? 1 : 0) /* trace_id */)
         .flatMapValues(new RowsToDependencyLinks(logInitializer, hasTraceIdHigh))
         .values()
-        .mapToPair(link -> tuple2(tuple2(link.parent, link.child), link))
-        .reduceByKey((l, r) -> DependencyLink.create(l.parent, l.child, l.callCount + r.callCount))
+        .mapToPair(link -> new Tuple2<>(new Tuple2<>(link.parent(), link.child()), link))
+        .reduceByKey((l, r) -> l.toBuilder()
+            .callCount(l.callCount() + r.callCount())
+            .errorCount(l.errorCount() + r.errorCount())
+            .build())
         .values().collect();
 
     sc.stop();
@@ -232,12 +238,13 @@ public final class MySQLDependenciesJob {
   void saveToMySQL(List<DependencyLink> links) {
     try (Connection con = DriverManager.getConnection(url, user, password)) {
       PreparedStatement replace = con.prepareStatement(
-              "REPLACE INTO zipkin_dependencies (day, parent, child, call_count) VALUES (?,?,?,?)");
+              "REPLACE INTO zipkin_dependencies (day, parent, child, call_count, error_count) VALUES (?,?,?,?,?)");
       for (DependencyLink link : links) {
         replace.setDate(1, new java.sql.Date(day));
-        replace.setString(2, link.parent);
-        replace.setString(3, link.child);
-        replace.setLong(4, link.callCount);
+        replace.setString(2, link.parent());
+        replace.setString(3, link.child());
+        replace.setLong(4, link.callCount());
+        replace.setLong(5, link.errorCount());
         replace.executeUpdate();
       }
     } catch (SQLException e) {
@@ -250,8 +257,14 @@ public final class MySQLDependenciesJob {
     return result != null ? result : defaultValue;
   }
 
-  /** Added so the code is compilable against scala 2.10 (used in spark 1.6.2) */
-  private static <T1, T2> Tuple2<T1, T2> tuple2(T1 v1, T2 v2) {
-    return new Tuple2<>(v1, v2); // in scala 2.11+ Tuple.apply works naturally
+  /** For bucketed data floored to the day. For example, dependency links. */
+  static long midnightUTC(long epochMillis) {
+    Calendar day = Calendar.getInstance(UTC);
+    day.setTimeInMillis(epochMillis);
+    day.set(Calendar.MILLISECOND, 0);
+    day.set(Calendar.SECOND, 0);
+    day.set(Calendar.MINUTE, 0);
+    day.set(Calendar.HOUR_OF_DAY, 0);
+    return day.getTimeInMillis();
   }
 }

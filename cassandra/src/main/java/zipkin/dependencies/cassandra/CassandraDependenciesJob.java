@@ -1,5 +1,5 @@
-/**
- * Copyright 2016-2017 The OpenZipkin Authors
+/*
+ * Copyright 2016-2018 The OpenZipkin Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -17,34 +17,35 @@ import com.datastax.driver.core.Session;
 import com.datastax.driver.core.querybuilder.QueryBuilder;
 import com.datastax.spark.connector.cql.CassandraConnector;
 import com.google.common.base.Joiner;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Sets;
 import com.google.common.net.HostAndPort;
 import java.nio.ByteBuffer;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Date;
-import java.util.LinkedList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
+import javax.annotation.Nullable;
 import org.apache.spark.SparkConf;
 import org.apache.spark.SparkContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import scala.Tuple2;
 import scala.runtime.AbstractFunction1;
-import zipkin.DependencyLink;
-import zipkin.internal.Dependencies;
-import zipkin.internal.Nullable;
+import zipkin2.DependencyLink;
+import zipkin2.internal.Dependencies;
 
 import static com.datastax.spark.connector.japi.CassandraJavaUtil.javaFunctions;
-import static zipkin.internal.Util.checkNotNull;
-import static zipkin.internal.Util.midnightUTC;
+import static com.google.common.base.Preconditions.checkNotNull;
 
 public final class CassandraDependenciesJob {
-  private static final Logger log = LoggerFactory.getLogger(CassandraRowsToDependencyLinks.class);
+  static final TimeZone UTC = TimeZone.getTimeZone("UTC");
+  static final Logger log = LoggerFactory.getLogger(CassandraDependenciesJob.class);
 
   public static Builder builder() {
     return new Builder();
@@ -53,20 +54,8 @@ public final class CassandraDependenciesJob {
   public static final class Builder {
 
     String keyspace = getEnv("CASSANDRA_KEYSPACE", "zipkin");
-    /** Comma separated list of hosts / IPs part of Cassandra cluster. Defaults to localhost */
     String contactPoints = getEnv("CASSANDRA_CONTACT_POINTS", "localhost");
-
-    Map<String,String> sparkProperties = ImmutableMap.<String, String>builder()
-      .put("spark.ui.enabled", "false")
-      .put("spark.cassandra.connection.host", parseHosts(contactPoints))
-      .put("spark.cassandra.connection.port", parsePort(contactPoints))
-      .put("spark.cassandra.connection.ssl.enabled", getEnv("CASSANDRA_USE_SSL", "false"))
-      .put("spark.cassandra.connection.ssl.trustStore.password", System.getProperty("javax.net.ssl.trustStorePassword", ""))
-      .put("spark.cassandra.connection.ssl.trustStore.path", System.getProperty("javax.net.ssl.trustStore", ""))
-      .put("spark.cassandra.auth.username", getEnv("CASSANDRA_USERNAME", ""))
-      .put("spark.cassandra.auth.password", getEnv("CASSANDRA_PASSWORD", ""))
-      .build();
-
+    String localDc = getEnv("CASSANDRA_LOCAL_DC", null);
     // local[*] master lets us run & test the job locally without setting a Spark cluster
     String sparkMaster = getEnv("SPARK_MASTER", "local[*]");
     // needed when not in local mode
@@ -75,6 +64,22 @@ public final class CassandraDependenciesJob {
 
     // By default the job only works on traces whose first timestamp is today
     long day = midnightUTC(System.currentTimeMillis());
+
+    final Map<String, String> sparkProperties = new LinkedHashMap<>();
+
+    Builder() {
+      sparkProperties.put("spark.ui.enabled", "false");
+      sparkProperties.put(
+          "spark.cassandra.connection.ssl.enabled", getEnv("CASSANDRA_USE_SSL", "false"));
+      sparkProperties.put(
+          "spark.cassandra.connection.ssl.trustStore.password",
+          System.getProperty("javax.net.ssl.trustStorePassword", ""));
+      sparkProperties.put(
+          "spark.cassandra.connection.ssl.trustStore.path",
+          System.getProperty("javax.net.ssl.trustStore", ""));
+      sparkProperties.put("spark.cassandra.auth.username", getEnv("CASSANDRA_USERNAME", ""));
+      sparkProperties.put("spark.cassandra.auth.password", getEnv("CASSANDRA_PASSWORD", ""));
+    }
 
     /** When set, this indicates which jars to distribute to the cluster. */
     public Builder jars(String... jars) {
@@ -100,11 +105,20 @@ public final class CassandraDependenciesJob {
       return this;
     }
 
-    public CassandraDependenciesJob build() {
-      return new CassandraDependenciesJob(this);
+    /** Comma separated list of hosts / IPs part of Cassandra cluster. Defaults to localhost */
+    public Builder contactPoints(String contactPoints) {
+      this.contactPoints = contactPoints;
+      return this;
     }
 
-    Builder() {
+    /** The local DC to connect to (other nodes will be ignored) */
+    public Builder localDc(@Nullable String localDc) {
+      this.localDc = localDc;
+      return this;
+    }
+
+    public CassandraDependenciesJob build() {
+      return new CassandraDependenciesJob(this);
     }
   }
 
@@ -125,9 +139,10 @@ public final class CassandraDependenciesJob {
     SimpleDateFormat df = new SimpleDateFormat("yyyy-MM-dd");
     df.setTimeZone(TimeZone.getTimeZone("UTC"));
     this.dateStamp = df.format(new Date(builder.day));
-    this.conf = new SparkConf(true)
-        .setMaster(builder.sparkMaster)
-        .setAppName(getClass().getName());
+    this.conf = new SparkConf(true).setMaster(builder.sparkMaster).setAppName(getClass().getName());
+    conf.set("spark.cassandra.connection.host", parseHosts(builder.contactPoints));
+    conf.set("spark.cassandra.connection.port", parsePort(builder.contactPoints));
+    if (builder.localDc != null) conf.set("connection.local_dc", builder.localDc);
     if (builder.jars != null) conf.setJars(builder.jars);
     for (Map.Entry<String, String> entry : builder.sparkProperties.entrySet()) {
       conf.set(entry.getKey(), entry.getValue());
@@ -139,18 +154,32 @@ public final class CassandraDependenciesJob {
     long microsLower = day * 1000;
     long microsUpper = (day * 1000) + TimeUnit.DAYS.toMicros(1) - 1;
 
-    log.info("Running Dependencies job for {}: {} ≤ Span.timestamp {}", dateStamp, microsLower,
+    log.info(
+        "Running Dependencies job for {}: {} ≤ Span.timestamp {}",
+        dateStamp,
+        microsLower,
         microsUpper);
 
     SparkContext sc = new SparkContext(conf);
 
-    List<DependencyLink> links = javaFunctions(sc).cassandraTable(keyspace, "traces")
-        .spanBy(r -> r.getLong("trace_id"), Long.class)
-        .flatMapValues(new CassandraRowsToDependencyLinks(logInitializer, microsLower, microsUpper))
-        .values()
-        .mapToPair(link -> tuple2(tuple2(link.parent, link.child), link))
-        .reduceByKey((l, r) -> DependencyLink.create(l.parent, l.child, l.callCount + r.callCount))
-        .values().collect();
+    List<DependencyLink> links =
+        javaFunctions(sc)
+            .cassandraTable(keyspace, "traces")
+            .spanBy(r -> r.getLong("trace_id"), Long.class)
+            .flatMapValues(
+                new CassandraRowsToDependencyLinks(logInitializer, microsLower, microsUpper))
+            .values()
+            .mapToPair(link -> new Tuple2<>(new Tuple2<>(link.parent(), link.child()), link))
+            .reduceByKey(
+                (l, r) ->
+                    DependencyLink.newBuilder()
+                        .parent(l.parent())
+                        .child(l.child())
+                        .callCount(l.callCount() + r.callCount())
+                        .errorCount(l.errorCount() + r.errorCount())
+                        .build())
+            .values()
+            .collect();
 
     sc.stop();
 
@@ -158,24 +187,33 @@ public final class CassandraDependenciesJob {
   }
 
   void saveToCassandra(List<DependencyLink> links) {
-    Dependencies thrift = Dependencies.create(day, day /** ignored */, links);
+    Dependencies thrift =
+        Dependencies.create(
+            day,
+            day
+            /** ignored */
+            ,
+            links);
     ByteBuffer blob = thrift.toThrift();
 
     log.info("Saving with day={}", dateStamp);
-    CassandraConnector.apply(conf).withSessionDo(new AbstractFunction1<Session, Void>() {
-      @Override public Void apply(Session session) {
-        session.execute(QueryBuilder.insertInto(keyspace, "dependencies")
-            .value("day", new Date(day))
-            .value("dependencies", blob)
-        );
-        return null;
-      }
-    });
+    CassandraConnector.apply(conf)
+        .withSessionDo(
+            new AbstractFunction1<Session, Void>() {
+              @Override
+              public Void apply(Session session) {
+                session.execute(
+                    QueryBuilder.insertInto(keyspace, "dependencies")
+                        .value("day", new Date(day))
+                        .value("dependencies", blob));
+                return null;
+              }
+            });
     log.info("Done");
   }
 
   static String parseHosts(String contactPoints) {
-    List<String> result = new LinkedList<>();
+    List<String> result = new ArrayList<>();
     for (String contactPoint : contactPoints.split(",")) {
       HostAndPort parsed = HostAndPort.fromString(contactPoint);
       result.add(parsed.getHostText());
@@ -193,8 +231,14 @@ public final class CassandraDependenciesJob {
     return ports.size() == 1 ? String.valueOf(ports.iterator().next()) : "9042";
   }
 
-  /** Added so the code is compilable against scala 2.10 (used in spark 1.6.2) */
-  private static <T1, T2> Tuple2<T1, T2> tuple2(T1 v1, T2 v2) {
-    return new Tuple2<>(v1, v2); // in scala 2.11+ Tuple.apply works naturally
+  /** For bucketed data floored to the day. For example, dependency links. */
+  static long midnightUTC(long epochMillis) {
+    Calendar day = Calendar.getInstance(UTC);
+    day.setTimeInMillis(epochMillis);
+    day.set(Calendar.MILLISECOND, 0);
+    day.set(Calendar.SECOND, 0);
+    day.set(Calendar.MINUTE, 0);
+    day.set(Calendar.HOUR_OF_DAY, 0);
+    return day.getTimeInMillis();
   }
 }

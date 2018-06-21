@@ -1,5 +1,5 @@
-/**
- * Copyright 2016-2017 The OpenZipkin Authors
+/*
+ * Copyright 2016-2018 The OpenZipkin Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -15,15 +15,15 @@ package zipkin.dependencies.mysql;
 
 import java.util.Collections;
 import java.util.Iterator;
+import javax.annotation.Nullable;
 import org.apache.spark.api.java.function.Function;
 import org.apache.spark.sql.Row;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import scala.Serializable;
-import zipkin.DependencyLink;
-import zipkin.internal.DependencyLinkSpan;
-import zipkin.internal.DependencyLinker;
-import zipkin.internal.Nullable;
+import zipkin2.DependencyLink;
+import zipkin2.internal.DependencyLinker;
+import zipkin2.Span;
 
 final class RowsToDependencyLinks
     implements Serializable, Function<Iterable<Row>, Iterable<DependencyLink>> {
@@ -40,7 +40,7 @@ final class RowsToDependencyLinks
 
   @Override public Iterable<DependencyLink> call(Iterable<Row> rows) {
     if (logInitializer != null) logInitializer.run();
-    Iterator<Iterator<DependencyLinkSpan>> traces =
+    Iterator<Iterator<Span>> traces =
         new DependencyLinkSpanIterator.ByTraceId(rows.iterator(), hasTraceIdHigh);
 
     if (!traces.hasNext()) return Collections.emptyList();

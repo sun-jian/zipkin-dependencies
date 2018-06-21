@@ -18,12 +18,12 @@ Note that Zipkin Dependencies requires minimum JRE 7. For example:
 
 ```bash
 $ wget -O zipkin-dependencies.jar 'https://search.maven.org/remote_content?g=io.zipkin.dependencies&a=zipkin-dependencies&v=LATEST'
-$ STORAGE_TYPE=cassandra java -jar zipkin-dependencies.jar
+$ STORAGE_TYPE=cassandra3 java -jar zipkin-dependencies.jar
 ```
 
 You can also start Zipkin Dependencies via [Docker](https://github.com/openzipkin/docker-zipkin-dependencies).
 ```bash
-$ docker run --env STORAGE_TYPE=cassandra --env CASSANDRA_CONTACT_POINTS=host1,host2 openzipkin/zipkin-dependencies
+$ docker run --env STORAGE_TYPE=cassandra3 --env CASSANDRA_CONTACT_POINTS=host1,host2 openzipkin/zipkin-dependencies
 ```
 
 ## Usage
@@ -33,9 +33,9 @@ via an argument in YYYY-mm-dd format, like 2016-07-16.
 
 ```bash
 # ex to run the job to process yesterday's traces on OS/X
-$ STORAGE_TYPE=cassandra java -jar zipkin-dependencies.jar `date -uv-1d +%F`
+$ STORAGE_TYPE=cassandra3 java -jar zipkin-dependencies.jar `date -uv-1d +%F`
 # or on Linux
-$ STORAGE_TYPE=cassandra java -jar zipkin-dependencies.jar `date -u -d '1 day ago' +%F`
+$ STORAGE_TYPE=cassandra3 java -jar zipkin-dependencies.jar `date -u -d '1 day ago' +%F`
 ```
 
 ## Environment Variables
@@ -43,21 +43,28 @@ $ STORAGE_TYPE=cassandra java -jar zipkin-dependencies.jar `date -u -d '1 day ag
 moment, separate binaries are made for each storage layer.
 
 The following variables are common to all storage layers:
+
     * `SPARK_MASTER`: Spark master to submit the job to; Defaults to `local[*]`
     * `ZIPKIN_LOG_LEVEL`: Log level for zipkin-related status; Defaults to INFO (use DEBUG for details)
 
 ### Cassandra
-Cassandra is used when `STORAGE_TYPE=cassandra`. The schema is compatible with Zipkin's [Cassandra storage component](https://github.com/openzipkin/zipkin/tree/master/zipkin-storage/cassandra).
+Cassandra is used when `STORAGE_TYPE=cassandra` or `STORAGE_TYPE=cassandra3`.
+* `cassandra` is compatible with Zipkin's [Legacy Cassandra storage component](https://github.com/openzipkin/zipkin/tree/master/zipkin-storage/cassandra).
+* `cassandra3` is compatible with Zipkin's [Cassandra v3 storage component](https://github.com/openzipkin/zipkin/tree/master/zipkin-storage/zipkin2_cassandra).
+
+Here are the variables that apply
 
     * `CASSANDRA_KEYSPACE`: The keyspace to use. Defaults to "zipkin".
     * `CASSANDRA_CONTACT_POINTS`: Comma separated list of hosts / ip addresses part of Cassandra cluster. Defaults to localhost
+    * `CASSANDRA_LOCAL_DC`: The local DC to connect to (other nodes will be ignored)
     * `CASSANDRA_USERNAME` and `CASSANDRA_PASSWORD`: Cassandra authentication. Will throw an exception on startup if authentication fails
     * `CASSANDRA_USE_SSL`: Requires `javax.net.ssl.trustStore` and `javax.net.ssl.trustStorePassword`, defaults to false.
+    * `STRICT_TRACE_ID`: When false, dependency linking only looks at 64 bits of a trace ID, defaults to true.
 
 Example usage:
 
 ```bash
-$ STORAGE_TYPE=cassandra CASSANDRA_USERNAME=user CASSANDRA_PASSWORD=pass java -jar zipkin-dependencies.jar
+$ STORAGE_TYPE=cassandra3 CASSANDRA_USERNAME=user CASSANDRA_PASSWORD=pass java -jar zipkin-dependencies.jar
 ```
 
 ### MySQL Storage
@@ -85,9 +92,13 @@ Elasticsearch is used when `STORAGE_TYPE=elasticsearch`. The schema is compatibl
     * `ES_HOSTS`: A comma separated list of elasticsearch hosts advertising http. Defaults to
                   localhost. Add port section if not listening on port 9200. Only one of these hosts
                   needs to be available to fetch the remaining nodes in the cluster. It is
-                  recommended to set this to all the master nodes of the cluster.
+                  recommended to set this to all the master nodes of the cluster. Use url format for
+                  SSL. For example, "https://yourhost:8888"
     * `ES_NODES_WAN_ONLY`: Set to true to only use the values set in ES_HOSTS, for example if your
                            elasticsearch cluster is in Docker. Defaults to false
+    * `ES_USERNAME` and `ES_PASSWORD`: Elasticsearch basic authentication. Use when X-Pack security
+                                       (formerly Shield) is in place. By default no username or
+                                       password is provided to elasticsearch.
 
 Example usage:
 
@@ -96,6 +107,16 @@ $ STORAGE_TYPE=elasticsearch ES_HOSTS=host1,host2 java -jar zipkin-dependencies.
 # To override the http port, add it to the host string
 $ STORAGE_TYPE=elasticsearch ES_HOSTS=host1:9201 java -jar zipkin-dependencies.jar
 ```
+
+#### Custom certificates
+
+When using an https endpoint in `ES_HOSTS`, you can use the following standard properties to
+customize the certificates used for the connection:
+
+* javax.net.ssl.keyStore
+* javax.net.ssl.keyStorePassword
+* javax.net.ssl.trustStore
+* javax.net.ssl.trustStorePassword
 
 ## Building locally
 
